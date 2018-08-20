@@ -1,16 +1,20 @@
 
 import { v4 as uuid } from "uuid";
-import * as url from "url";
 import objhash = require("object-hash");
+import { URL } from "url";
 
 export type EndpointStatus = "unknown" | "up" | "down" | "off";
+export type EndpointType = "waf" | "service";
+type EndpointProtocol = "http" | "https" | "*";
+type EndpointPort = number | "*";
 
 export interface EndpointJSON {
     method?:   string,
     in?:       string,
     out:       string,
-    health?:   string,
-    weight?:   number
+    probe?:    string,
+    weight?:   number,
+    waf?:      string
 }
 
 const _parent = new WeakMap();
@@ -69,6 +73,24 @@ export class EndpointProxy {
         parent.actual = value;
     }
 
+    public get weight(): number {
+        const parent = _parent.get(this) as Endpoint;
+        return parent.weight;
+    }
+    public set weight(value: number) {
+        const parent = _parent.get(this) as Endpoint;
+        parent.weight = value;
+    }
+
+    public get waf(): string {
+        const parent = _parent.get(this) as Endpoint;
+        return parent.waf;
+    }
+    public set waf(value: string) {
+        const parent = _parent.get(this) as Endpoint;
+        parent.waf = value;
+    }
+
     public get code(): number {
         const parent = _parent.get(this) as Endpoint;
         return parent.code || 0;
@@ -98,9 +120,19 @@ export class EndpointProxy {
     }
 }
 
+interface EndpointRouteJSON {
+    protocol: EndpointProtocol;
+    port:     EndpointPort;
+    host:     string;
+    hostname: string;
+    pathname: string;
+    search:   string;
+    href:     string;
+}
+
 export class EndpointRoute {
-    public protocol: string;
-    public port:     number;
+    public protocol: EndpointProtocol;
+    public port:     EndpointPort;
     public host:     string;
     public hostname: string;
     public pathname: string;
@@ -114,26 +146,81 @@ export class EndpointRoute {
         return dedupe;
     }
 
-    constructor(href: string) {
-        const route = url.parse(href);
-        if (!route.protocol) throw new Error(`ROUTE ${href}: must specify a protocol.`);
-        if (route.protocol !== "http:" && route.protocol !== "https:") throw new Error(`ROUTE ${href}: must specify a protocol of "http" or "https".`);
-        this.protocol = route.protocol.substring(0, route.protocol.length - 1);
-        if (route.port) {
-            this.port = Number.parseInt(route.port);
-        } else if (route.protocol === "http:") {
-            this.port = 80;
-        } else if (route.protocol === "https:") {
-            this.port = 443;
-        } else {
-            throw new Error(`ROUTE ${href}: must specify a port.`);
+    private static normalizeProtocol(route: URL): EndpointProtocol {
+        switch (route.protocol) {
+            case "https:": return "https";
+            case "http:": return "http";
+            default:
+                throw new Error(`ROUTE ${route.href}: must specify a protocol of "http" or "https".`);
         }
+    }
+
+    protected static normalizePort(route: URL): EndpointPort {
+        if (route.port) {
+            return Number.parseInt(route.port);
+        } else if (route.protocol === "http:") {
+            return 80;
+        } else if (route.protocol === "https:") {
+            return 443;
+        } else {
+            throw new Error(`ROUTE ${route.href}: must specify a port.`);
+        }
+    }
+
+    public static route(href: string) {
+        href = href.toLowerCase();
+        let hasProtocol = true;
+        if (!href.startsWith("http:") && !href.startsWith("https:")) {
+            href = "http://" + href;
+            hasProtocol = false;
+        }
+        let hasPort = true;
+        const slash = href.split("/");
+        if (slash.length > 2) {
+            const colon = slash[2].split(":");
+            if (colon.length === 2 && colon[1] === "*") {
+                slash[2] = colon[0] + ":0";
+                href = slash.join("/");
+                hasPort = false;
+            }
+        }
+        const route = new URL(href);
         if (!route.host || !route.hostname) throw new Error(`ROUTE ${href}: must specify a valid host/hostname.`);
-        this.host = route.host.toLowerCase();
-        this.hostname = route.hostname.toLowerCase();
-        this.pathname = (route.pathname) ? route.pathname.toLowerCase() : "/";
-        this.search = route.search || "";
-        this.href = route.href || href;
+        const obj: EndpointRouteJSON = {
+            protocol: (hasProtocol) ? EndpointRoute.normalizeProtocol(route) : "*",
+            port: (hasPort) ? EndpointRoute.normalizePort(route) : "*",
+            host: route.host.toLowerCase(),
+            hostname: route.hostname.toLowerCase(),
+            pathname: (route.pathname) ? route.pathname.toLowerCase() : "/",
+            search: route.search || "",
+            href: route.href || href
+        };
+        return new EndpointRoute(obj);
+    }
+
+    public static explicit(href: string) {
+        const route = new URL(href);
+        if (!route.host || !route.hostname) throw new Error(`ROUTE ${href}: must specify a valid host/hostname.`);
+        const obj: EndpointRouteJSON = {
+            protocol: EndpointRoute.normalizeProtocol(route),
+            port: EndpointRoute.normalizePort(route),
+            host: route.host.toLowerCase(),
+            hostname: route.hostname.toLowerCase(),
+            pathname: (route.pathname) ? route.pathname.toLowerCase() : "/",
+            search: route.search || "",
+            href: route.href || href
+        };
+        return new EndpointRoute(obj);
+    }
+
+    constructor(obj: EndpointRouteJSON) {
+        this.protocol = obj.protocol;
+        this.port = obj.port;
+        this.host = obj.host;
+        this.hostname = obj.hostname;
+        this.pathname = obj.pathname;
+        this.search = obj.search;
+        this.href = obj.href;
     }
 }
 
@@ -141,11 +228,13 @@ export default class Endpoint {
 
     public id:      string;
     public hash:    string;
+    public type:    EndpointType   = "service";
     public method:  string         = "GET";
     public in?:     EndpointRoute;
     public out?:    EndpointRoute;
-    public health?: EndpointRoute;
+    public probe?:  EndpointRoute;
     public weight:  number         = 1.0;
+    public waf:     string         = "bypass";
     public _status: EndpointStatus = "unknown";
     public actual:  EndpointStatus = "unknown";
     public code?:   number;
@@ -169,8 +258,8 @@ export default class Endpoint {
             timeout: 30000
         };
         clone.method = this.method;
-        if (this.health && this.health.href) {
-            clone.url = this.health.href;
+        if (this.probe && this.probe.href) {
+            clone.url = this.probe.href;
         } else if (this.out && this.out.href) {
             clone.url = this.out.href;
         }
@@ -187,33 +276,38 @@ export default class Endpoint {
         if (this.in) global.endpoints.resetCounters(this.in.host);
     }
 
+    public static createProtectEndpoint() {
+        const endpoint = new Endpoint({
+            out: "http://localhost:9002"
+        });
+        endpoint.type = "waf";
+        return endpoint;
+    }
+
     constructor(obj: EndpointJSON) {
 
         // assign a unique id
         this.id = uuid();
-        global.logger.log("info", `endpoint "${this.id}" (in: "${obj.in}", out: "${obj.out}") was defined.`);
 
         // hash the definition so that we can determine if it changes
         this.hash = objhash(obj);
 
-        // need to put these into a better object:
-
         // if there is an "in" route, then define it
         if (obj.in) {
             try {
-                this.in = new EndpointRoute(obj.in);
+                this.in = EndpointRoute.route(obj.in);
             } catch (ex) {
                 global.logger.error(ex);
             }
         }
 
         // define the "out" route
-        this.out = new EndpointRoute(obj.out);
+        this.out = EndpointRoute.explicit(obj.out);
 
         // if there is an "health" route, then define it
-        if (obj.health) {
+        if (obj.probe) {
             try {
-                this.health = new EndpointRoute(obj.health);
+                this.probe = EndpointRoute.explicit(obj.probe);
             } catch (ex) {
                 global.logger.error(ex);
             }
@@ -222,6 +316,7 @@ export default class Endpoint {
         // assign other values
         if (obj.method) this.method = obj.method;
         if (obj.weight) this.weight = obj.weight;
+        if (obj.waf) this.waf = obj.waf;
 
         // create the proxy
         this.proxy = new EndpointProxy(this);

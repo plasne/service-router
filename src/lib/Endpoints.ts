@@ -1,11 +1,8 @@
 
-import * as events from "events";
 import objhash = require("object-hash");
 import Endpoint, { EndpointJSON, EndpointProxy, EndpointRoute } from "./Endpoint";
 
 export default class Endpoints extends Array<Endpoint> {
-
-    public events: events = new events.EventEmitter();
 
     public define(obj: EndpointJSON) {
 
@@ -16,9 +13,15 @@ export default class Endpoints extends Array<Endpoint> {
 
         // create the new endpoint (must have an out)
         const endpoint = new Endpoint(obj);
-        if (!endpoint) return null;
+        if (endpoint.in && endpoint.out) {
+            global.logger.log("info", `endpoint "${endpoint.id}" (in: "${endpoint.in.href}", out: "${endpoint.out.href}") was defined.`);
+        } else if (endpoint.out) {
+            global.logger.log("info", `endpoint "${endpoint.id}" (out: "${endpoint.out.href}") was defined.`);
+        } else {
+            return null;
+        }
 
-        // if it has a new port then raise that as an event
+        // if there is a port defined that isn't being listened to, throw an error
         if (endpoint.in) {
             const found = this.find(existing => {
                 if (!existing.in) return false;
@@ -26,13 +29,14 @@ export default class Endpoints extends Array<Endpoint> {
                 return (existing.in.port === endpoint.in.port);
             });
             if (!found) {
-                this.events.emit("add-port", endpoint.in.protocol, endpoint.in.port);
+
+                //global.logger.log("info", `proxying protocol "${this.protocol}" on port "${this.port}"...`);
+
             }
         }
 
         // add the new endpoint
         this.push(endpoint);
-        this.events.emit("add-endpoint", endpoint);
 
         return endpoint;
     }
@@ -71,27 +75,37 @@ export default class Endpoints extends Array<Endpoint> {
 
         // filter to everything that matches
         const valid = new Endpoints();
-        let longest = 0;
+        let hostname_longest = 0;
+        let pathname_longest = 0;
         for (const endpoint of this) {
             if (!endpoint.in) {
                 // this endpoint cannot accept inbound traffic
             } else if (endpoint.status === "off") {
                 // the endpoint is turned off
-            } else if (endpoint.in.hostname !== incoming.hostname) {
+            } else if (endpoint.in.protocol !== "*" && endpoint.in.protocol !== incoming.protocol) {
+                // the protocols don't match
+            } else if (endpoint.in.port !== "*" && endpoint.in.port !== incoming.port) {
+                // the ports don't match
+            } else if (endpoint.in.hostname !== "*" && endpoint.in.hostname !== incoming.hostname) {
                 // the hostnames don't match
-            } else if (incoming.pathname < endpoint.in.pathname) {
+            } else if (endpoint.in.pathname !== "*" && incoming.pathname < endpoint.in.pathname) {
                 // the incoming path is longer than this endpoint's path
-            } else if (!incoming.pathname.startsWith(endpoint.in.pathname)) {
+            } else if (endpoint.in.pathname !== "*" && !incoming.pathname.startsWith(endpoint.in.pathname)) {
                 // the path is not equivalent
             } else {
 
-                // include; if as long or longer
-                const len = endpoint.in.pathname.length;
-                if (len > longest) {
+                // include; if as long or longer (favor hostname over pathname)
+                const hostname_length = endpoint.in.hostname.length;
+                if (hostname_length > hostname_longest) {
                     valid.length = 0;
-                    longest = len;
+                    hostname_longest = hostname_length;
                 }
-                if (len === longest) {
+                const pathname_length = endpoint.in.pathname.length;
+                if (pathname_length > pathname_longest) {
+                    valid.length = 0;
+                    pathname_longest = pathname_length;
+                }
+                if (hostname_length === hostname_longest && pathname_length === pathname_longest) {
                     valid.push(endpoint);
                 }
 

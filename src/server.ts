@@ -7,16 +7,29 @@ import express = require("express");
 cmd
     .version("0.1.0")
     .option("-p, --port <integer>", `PORT. The port to host the web services on. Defaults to "8100".`, parseInt)
+    .option("-a, --always <string>", `ALWAYS. This can be set to a number whereby all requests respond with that HTTP status code.`, parseInt)
     .parse(process.argv);
 
 // globals
 const PORT          = cmd.port         || process.env.PORT          || 8100;
+const ALWAYS        = cmd.always       || process.env.ALWAYS;
 
 // log
-console.log(`PORT          = "${PORT}"`);
+console.log(`PORT    = "${PORT}"`);
+console.log(`ALWAYS  = "${ALWAYS}"`);
 
 // startup express
 const app = express();
+app.use((_, res, next) => {
+    if (!isNaN(ALWAYS)) {
+        res.status(ALWAYS).send({
+            endpoint: "ALWAYS",
+            port: PORT
+        });
+    } else {
+        next();
+    }
+});
 
 app.all("/500", (_, res) => {
     res.status(500).send({

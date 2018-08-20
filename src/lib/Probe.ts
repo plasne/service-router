@@ -6,6 +6,7 @@ import axios from "axios";
 import { NodeVM, VMScript } from "vm2";
 import Endpoints from "./Endpoints";
 import Endpoint, { EndpointJSON, EndpointProxy } from "./Endpoint";
+import { ListenerJSON } from "./Listener";
 
 // promisify
 const readFileAsync = util.promisify(fs.readFile);
@@ -120,6 +121,14 @@ export default class Probe {
         this.context = {
 
             bag: bag,
+
+            listen: (obj: ListenerJSON | number) => {
+                if (typeof obj === "number") {
+                    global.listeners.add({ port: obj });
+                } else {
+                    global.listeners.add(obj);
+                }
+            },
 
             define: (obj: EndpointJSON) => {
                 const endpoint = global.endpoints.define(obj);
